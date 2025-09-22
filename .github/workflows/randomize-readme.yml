@@ -1,0 +1,111 @@
+name: Randomize README image
+
+on:
+  schedule:
+    # Run daily at midnight UTC (change as desired)
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  randomize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Choose random hoverN.gif and update README
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+
+          # Determine default branch dynamically from origin/HEAD
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@refs/remotes/origin/@@' || true)
+          if [ -z "$DEFAULT_BRANCH" ]; then
+            DEFAULT_BRANCH=$(git remote show origin | sed -n '/HEAD branch/s/.*: //p' || true)
+          fi
+          if [ -z "$DEFAULT_BRANCH" ]; then
+            DEFAULT_BRANCH="main"
+          fi
+          echo "Default branch detected: $DEFAULT_BRANCH"
+
+          # Find hoverN.gif files in the repo root (hover1.gif, hover2.gif, ...)
+          mapfile -t IMAGES < <(ls -1 hover*.gif 2>/dev/null || true)
+
+          if [ ${#IMAGES[@]} -eq 0 ]; then
+            echo "No hover*.gif files found; exiting"
+            exit 0
+          fi
+
+          # get current image filename (first hoverN.gif referenced in README, if any)
+          CURRENT_IMAGE=""
+          if grep -q -E 'hover[0-9]+\.gif' README.md; then
+            CURRENT_IMAGE=$(perl -0777 -ne 'print "$1\n" if /hover([0-9]+)\.gif/s' README.md || true)
+            if [ -n "$CURRENT_IMAGE" ]; then
+              CURRENT_IMAGE="hover${CURRENT_IMAGE}.gif"
+            fi
+          fi
+          echo "Current image in README: ${CURRENT_IMAGE:-<none>}"
+
+          # Try selecting a different image up to N attempts to ensure README changes
+          attempts=0
+          max_attempts=10
+          CHOSEN_IMAGE=""
+          while [ $attempts -lt $max_attempts ]; do
+            IDX=$((RANDOM % ${#IMAGES[@]}))
+            IMAGE=${IMAGES[$IDX]}
+
+            # If the picked image matches the current one, retry
+            if [ -n "$CURRENT_IMAGE" ] && [ "$IMAGE" = "$CURRENT_IMAGE" ]; then
+              echo "Picked same image as currently in README ($IMAGE); retrying..."
+              attempts=$((attempts+1))
+              continue
+            fi
+
+            URL="https://github.com/${GITHUB_REPOSITORY}/blob/${DEFAULT_BRANCH}/${IMAGE}"
+            echo "Attempt $((attempts+1)): trying $IMAGE -> $URL"
+
+            # Use a Python script to safely replace URLs and unwrap code fences if needed.
+            # The Python script returns 0 if it made a change (and wrote README.md), 1 if no change.
+            python3 - "$URL" <<'PY'
+          import sys, re
+          url = sys.argv[1]
+          path = 'README.md'
+          txt = open(path, 'r', encoding='utf-8').read()
+          txt2 = re.sub(r'https://github\.com/[^)\s\'\"]*/hover[0-9]+\.gif', url, txt)
+          # unwrap code fence containing the URL
+          pattern = re.compile(r'```(?:markdown)?\s*\n(.*' + re.escape(url) + r'.*?)\n```', re.S)
+          txt3 = pattern.sub(lambda m: m.group(1), txt2)
+          if txt3 == txt:
+              sys.exit(1)
+          open(path, 'w', encoding='utf-8').write(txt3)
+          sys.exit(0)
+          PY
+
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "Replacement caused no change; retrying..."
+              attempts=$((attempts+1))
+              continue
+            else
+              CHOSEN_IMAGE="$IMAGE"
+              break
+            fi
+          done
+
+          if [ -z "$CHOSEN_IMAGE" ]; then
+            echo "No new image selected after $max_attempts attempts; exiting without commit"
+            exit 0
+          fi
+
+          # Configure git and commit the changed README with timestamp
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          git add README.md
+          git commit -m "Randomize README image: ${CHOSEN_IMAGE} @ ${ts}"
+          git push
