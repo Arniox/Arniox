@@ -2,8 +2,8 @@ name: Randomize README image
 
 on:
   schedule:
-    # Run daily at midnight UTC (change as desired)
-    - cron: "0 0 * * *"
+    # Run every 8 hours (at minute 0 of every 8th hour)
+    - cron: "0 */8 * * *"
   workflow_dispatch:
 
 # Allow the runner to write repository contents (needed to push README changes)
