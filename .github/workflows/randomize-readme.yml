@@ -6,6 +6,10 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
+# Allow the runner to write repository contents (needed to push README changes)
+permissions:
+  contents: write
+
 jobs:
   randomize:
     runs-on: ubuntu-latest
@@ -13,6 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
 
       - name: Choose random hoverN.gif and update README
